@@ -7,6 +7,8 @@ import os
 import re
 import tempfile
 
+from el.config.settings import EL_COOKIES_FILE
+
 logger = logging.getLogger("el.media")
 
 YOUTUBE_REGEX = re.compile(
@@ -14,6 +16,20 @@ YOUTUBE_REGEX = re.compile(
 )
 
 URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
+
+
+def _extract_video_id(url: str) -> str | None:
+    """Extract YouTube video ID from URL."""
+    patterns = [
+        r'youtube\.com/watch\?v=([\w\-]+)',
+        r'youtu\.be/([\w\-]+)',
+        r'youtube\.com/shorts/([\w\-]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
 
 
 def contains_youtube_url(text: str) -> str | None:
@@ -28,11 +44,15 @@ def contains_url(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-async def download_youtube_video(url: str, output_dir: str) -> dict:
-    """Download a YouTube video using yt-dlp with multiple fallback strategies.
+def _get_cookies_args() -> list[str]:
+    """Return yt-dlp cookie arguments if cookies.txt exists."""
+    if EL_COOKIES_FILE.exists():
+        return ["--cookies", str(EL_COOKIES_FILE)]
+    return []
 
-    Returns dict with keys: video_path, title, description, duration, transcript
-    """
+
+async def download_youtube_video(url: str, output_dir: str) -> dict:
+    """Download a YouTube video using yt-dlp with multiple fallback strategies."""
     result = {
         "video_path": None,
         "title": "",
@@ -41,19 +61,21 @@ async def download_youtube_video(url: str, output_dir: str) -> dict:
         "transcript": None,
     }
 
-    # First, try to get video info
+    # Try to get video info
     info = await _get_video_info(url)
     if info:
         result["title"] = info.get("title", "")
         result["description"] = info.get("description", "")[:500]
         result["duration"] = info.get("duration", 0)
 
-    # Try to get transcript/subtitles (works even when video download fails)
+    # Try transcript via multiple methods
     transcript = await _get_transcript(url, output_dir)
+    if not transcript:
+        transcript = await _get_transcript_api(url)
     if transcript:
         result["transcript"] = transcript
 
-    # Try to download the video with multiple strategies
+    # Try to download the actual video
     video_path = await _download_video(url, output_dir)
     if video_path:
         result["video_path"] = video_path
@@ -63,72 +85,69 @@ async def download_youtube_video(url: str, output_dir: str) -> dict:
 
 async def _get_video_info(url: str) -> dict | None:
     """Get video metadata without downloading."""
+    cookies = _get_cookies_args()
+
+    # Strategy 1: yt-dlp with cookies
     try:
+        cmd = ["yt-dlp", "--dump-json", "--no-download", "--no-warnings"] + cookies + [url]
         proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--dump-json",
-            "--no-download",
-            "--no-warnings",
-            url,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-
         if proc.returncode == 0 and stdout:
             return json.loads(stdout.decode())
     except Exception as e:
         logger.warning(f"yt-dlp info failed: {e}")
 
-    # Fallback: try with --cookies-from-browser
-    for browser in ["chrome", "firefox", "chromium"]:
+    # Strategy 2: noembed API (always works, limited info)
+    video_id = _extract_video_id(url)
+    if video_id:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
-                "--dump-json",
-                "--no-download",
-                "--no-warnings",
-                "--cookies-from-browser", browser,
-                url,
+                "curl", "-s", f"https://noembed.com/embed?url=https://www.youtube.com/watch?v={video_id}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
             if proc.returncode == 0 and stdout:
-                return json.loads(stdout.decode())
+                data = json.loads(stdout.decode())
+                if "title" in data:
+                    return {"title": data.get("title", ""), "description": "", "duration": 0}
         except Exception:
-            continue
+            pass
 
     return None
 
 
 async def _get_transcript(url: str, output_dir: str) -> str | None:
-    """Try to get video transcript/subtitles."""
+    """Try to get video transcript via yt-dlp subtitles."""
     sub_path = os.path.join(output_dir, "subs")
+    cookies = _get_cookies_args()
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--skip-download",
-            "--write-auto-sub",
-            "--write-sub",
+        cmd = [
+            "yt-dlp", "--skip-download",
+            "--write-auto-sub", "--write-sub",
             "--sub-lang", "en",
             "--sub-format", "vtt",
             "--convert-subs", "srt",
             "-o", sub_path,
-            url,
+        ] + cookies + [url]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         await asyncio.wait_for(proc.communicate(), timeout=30)
 
-        # Look for the subtitle file
         for ext in [".en.srt", ".srt", ".en.vtt", ".vtt"]:
             srt_file = sub_path + ext
             if os.path.exists(srt_file):
                 with open(srt_file) as f:
                     raw = f.read()
-                # Clean SRT formatting
                 lines = []
                 for line in raw.split("\n"):
                     line = line.strip()
@@ -136,37 +155,57 @@ async def _get_transcript(url: str, output_dir: str) -> str | None:
                         continue
                     if line not in lines[-1:]:
                         lines.append(line)
-                return " ".join(lines)[:3000]
+                return " ".join(lines)[:5000]
     except Exception as e:
-        logger.warning(f"Transcript extraction failed: {e}")
+        logger.warning(f"yt-dlp transcript failed: {e}")
+
+    return None
+
+
+async def _get_transcript_api(url: str) -> str | None:
+    """Fallback: try youtube-transcript-api Python package."""
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return None
+
+    try:
+        # Try the Python API directly (runs in executor to not block)
+        loop = asyncio.get_event_loop()
+
+        def _fetch():
+            try:
+                from youtube_transcript_api import YouTubeTranscriptApi
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+                text = " ".join([entry["text"] for entry in transcript_list])
+                return text[:5000]
+            except Exception:
+                return None
+
+        result = await loop.run_in_executor(None, _fetch)
+        if result:
+            logger.info("Got transcript via youtube-transcript-api")
+            return result
+    except Exception as e:
+        logger.warning(f"youtube-transcript-api failed: {e}")
 
     return None
 
 
 async def _download_video(url: str, output_dir: str) -> str | None:
-    """Download video file with multiple fallback strategies."""
+    """Download video file with cookies support."""
     output_path = os.path.join(output_dir, "video.mp4")
+    cookies = _get_cookies_args()
 
-    # Strategy 1: Direct download, best quality under 50MB
     strategies = [
-        [
-            "yt-dlp",
-            "-f", "best[filesize<50M]/worst",
-            "-o", output_path,
-            "--no-warnings",
-            url,
-        ],
-        # Strategy 2: Audio only (smaller, still useful for analysis)
-        [
-            "yt-dlp",
-            "-f", "worstaudio",
-            "-o", output_path,
-            "--no-warnings",
-            url,
-        ],
+        # Strategy 1: Best quality under 50MB with cookies
+        ["yt-dlp", "-f", "best[filesize<50M]/worst", "-o", output_path, "--no-warnings"] + cookies + [url],
+        # Strategy 2: Worst video (smallest) with cookies
+        ["yt-dlp", "-f", "worstvideo+worstaudio/worst", "-o", output_path, "--no-warnings"] + cookies + [url],
+        # Strategy 3: Audio only
+        ["yt-dlp", "-f", "worstaudio", "-o", output_path, "--no-warnings"] + cookies + [url],
     ]
 
-    for strategy in strategies:
+    for i, strategy in enumerate(strategies):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *strategy,
@@ -176,19 +215,19 @@ async def _download_video(url: str, output_dir: str) -> str | None:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
 
             if proc.returncode == 0 and os.path.exists(output_path):
+                logger.info(f"Video downloaded with strategy {i+1}")
                 return output_path
 
-            # Check for bot detection
             err = stderr.decode()
             if "Sign in to confirm" in err or "bot" in err.lower():
-                logger.warning("YouTube bot detection triggered, trying next strategy")
+                logger.warning(f"YouTube bot detection on strategy {i+1}")
                 continue
 
         except asyncio.TimeoutError:
-            logger.warning("Video download timed out, trying next strategy")
+            logger.warning(f"Strategy {i+1} timed out")
             continue
         except Exception as e:
-            logger.warning(f"Download strategy failed: {e}")
+            logger.warning(f"Strategy {i+1} failed: {e}")
             continue
 
     return None

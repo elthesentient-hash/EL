@@ -10,6 +10,7 @@ EL_HOME = Path(os.environ.get("EL_HOME", Path.home() / ".el"))
 EL_CONFIG_FILE = EL_HOME / "config.json"
 EL_DB_PATH = EL_HOME / "memory.db"
 EL_VOICE_CACHE = EL_HOME / "voice_cache"
+EL_COOKIES_FILE = EL_HOME / "cookies.txt"
 EL_LOGS = EL_HOME / "logs"
 
 

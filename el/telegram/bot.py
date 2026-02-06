@@ -193,6 +193,36 @@ class ELBot:
         self.memory.conn.commit()
         await update.message.reply_text("Done. Fresh start.")
 
+    async def cookies_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /cookies command - manage YouTube cookies."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        from el.config.settings import EL_COOKIES_FILE
+
+        if EL_COOKIES_FILE.exists():
+            size = EL_COOKIES_FILE.stat().st_size
+            await update.message.reply_text(
+                f"Cookies file exists ({size} bytes)\n\n"
+                f"To update: send a cookies.txt file as a document.\n"
+                f"To remove: /cookies clear"
+            )
+        else:
+            await update.message.reply_text(
+                "No cookies file set up. YouTube may block video downloads.\n\n"
+                "To fix this:\n"
+                "1. Install 'Get cookies.txt LOCALLY' browser extension\n"
+                "2. Go to youtube.com while logged in\n"
+                "3. Export cookies.txt\n"
+                "4. Send the cookies.txt file here as a document\n\n"
+                "EL will save it and use it for YouTube access."
+            )
+
+        if context.args and context.args[0] == "clear":
+            if EL_COOKIES_FILE.exists():
+                EL_COOKIES_FILE.unlink()
+                await update.message.reply_text("Cookies cleared.")
+
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming text messages."""
         if not self._is_authorized(update.effective_user.id):
@@ -386,6 +416,18 @@ class ELBot:
         file_name = doc.file_name or "file"
         suffix = os.path.splitext(file_name)[1] or ".bin"
 
+        # Special handling: cookies.txt file for YouTube
+        if file_name == "cookies.txt":
+            from el.config.settings import EL_COOKIES_FILE, EL_HOME
+            EL_HOME.mkdir(parents=True, exist_ok=True)
+            file = await context.bot.get_file(doc.file_id)
+            await file.download_to_drive(str(EL_COOKIES_FILE))
+            await update.message.reply_text(
+                f"Cookies saved! YouTube downloads should work now.\n"
+                f"Test it by sending a YouTube link."
+            )
+            return
+
         file = await context.bot.get_file(doc.file_id)
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir="/tmp") as tmp:
@@ -477,6 +519,7 @@ class ELBot:
         self.app.add_handler(CommandHandler("voice", self.voice_command))
         self.app.add_handler(CommandHandler("memory", self.memory_command))
         self.app.add_handler(CommandHandler("forget", self.forget_command))
+        self.app.add_handler(CommandHandler("cookies", self.cookies_command))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, self.handle_video))

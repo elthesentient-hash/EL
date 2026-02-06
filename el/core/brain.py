@@ -156,7 +156,7 @@ class Brain:
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=full_prompt.encode()), timeout=180
+            proc.communicate(input=full_prompt.encode()), timeout=300
         )
 
         if proc.returncode != 0:
