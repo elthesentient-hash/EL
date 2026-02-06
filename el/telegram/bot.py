@@ -225,6 +225,123 @@ class ELBot:
             except Exception as e:
                 logger.warning(f"Voice response failed (falling back to text only): {e}")
 
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming photos/images."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        user_id = str(update.effective_user.id)
+
+        # Get the highest resolution photo
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir="/tmp") as tmp:
+            img_path = tmp.name
+            await file.download_to_drive(img_path)
+
+        try:
+            caption = update.message.caption or "What's in this image? Describe and analyze it."
+            response = await self.brain.think(user_id, caption, attachments=[img_path])
+            await update.message.reply_text(response[:4096])
+        except Exception as e:
+            logger.error(f"Photo handling error: {e}")
+            await update.message.reply_text(f"Couldn't process that image: {str(e)[:200]}")
+        finally:
+            os.unlink(img_path)
+
+    async def handle_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming videos - extract frames and analyze."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        user_id = str(update.effective_user.id)
+
+        video = update.message.video or update.message.video_note
+        if not video:
+            return
+
+        await update.message.reply_text("Got the video. Analyzing it now...")
+
+        file = await context.bot.get_file(video.file_id)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False, dir="/tmp") as tmp:
+            video_path = tmp.name
+            await file.download_to_drive(video_path)
+
+        frame_dir = tempfile.mkdtemp(prefix="el_frames_", dir="/tmp")
+        frame_paths = []
+
+        try:
+            # Extract frames: 1 frame every 3 seconds
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", video_path,
+                "-vf", "fps=1/3", "-frames:v", "10",
+                "-q:v", "2",
+                os.path.join(frame_dir, "frame_%03d.jpg"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+            # Collect extracted frames
+            for f in sorted(os.listdir(frame_dir)):
+                if f.endswith(".jpg"):
+                    frame_paths.append(os.path.join(frame_dir, f))
+
+            if not frame_paths:
+                await update.message.reply_text("Couldn't extract frames from the video.")
+                return
+
+            caption = update.message.caption or "Analyze this video. Describe what's happening in each frame and give an overall summary."
+            caption += f"\n\n({len(frame_paths)} frames extracted from the video, 1 every 3 seconds)"
+
+            response = await self.brain.think(user_id, caption, attachments=frame_paths)
+            await update.message.reply_text(response[:4096])
+
+        except Exception as e:
+            logger.error(f"Video handling error: {e}")
+            await update.message.reply_text(f"Had trouble with that video: {str(e)[:200]}")
+        finally:
+            os.unlink(video_path)
+            for fp in frame_paths:
+                try:
+                    os.unlink(fp)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(frame_dir)
+            except OSError:
+                pass
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming documents (PDFs, files, images sent as documents)."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        user_id = str(update.effective_user.id)
+        doc = update.message.document
+
+        # Determine file extension
+        file_name = doc.file_name or "file"
+        suffix = os.path.splitext(file_name)[1] or ".bin"
+
+        file = await context.bot.get_file(doc.file_id)
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir="/tmp") as tmp:
+            doc_path = tmp.name
+            await file.download_to_drive(doc_path)
+
+        try:
+            caption = update.message.caption or f"Analyze this file ({file_name}). Summarize its contents."
+            response = await self.brain.think(user_id, caption, attachments=[doc_path])
+            await update.message.reply_text(response[:4096])
+        except Exception as e:
+            logger.error(f"Document handling error: {e}")
+            await update.message.reply_text(f"Couldn't process that file: {str(e)[:200]}")
+        finally:
+            os.unlink(doc_path)
+
     async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming voice messages."""
         if not self._is_authorized(update.effective_user.id):
@@ -301,6 +418,9 @@ class ELBot:
         self.app.add_handler(CommandHandler("memory", self.memory_command))
         self.app.add_handler(CommandHandler("forget", self.forget_command))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
+        self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        self.app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, self.handle_video))
+        self.app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         self.app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
 
         # Initialize voice engine

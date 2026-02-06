@@ -89,14 +89,17 @@ class Brain:
 
         return prompt
 
-    async def think(self, user_id: str, message: str) -> str:
-        """Send a message to Claude Code and get a response."""
+    async def think(self, user_id: str, message: str, attachments: list[str] = None) -> str:
+        """Send a message to Claude Code and get a response.
+
+        attachments: list of file paths (images, video frames, etc.)
+        """
         system_prompt = self._build_system_prompt(user_id)
 
         self.memory.add_message(user_id, "user", message)
 
         try:
-            result = await self._invoke_claude(system_prompt, message)
+            result = await self._invoke_claude(system_prompt, message, attachments)
             self.memory.add_message(user_id, "assistant", result)
             return result
         except FileNotFoundError:
@@ -112,9 +115,15 @@ class Brain:
             logger.error(f"Brain error: {e}")
             return f"Something went wrong: {str(e)[:300]}"
 
-    async def _invoke_claude(self, system_prompt: str, message: str) -> str:
+    async def _invoke_claude(self, system_prompt: str, message: str, attachments: list[str] = None) -> str:
         """Invoke Claude Code CLI in print mode."""
         full_prompt = f"{system_prompt}\n\nUser message: {message}"
+
+        if attachments:
+            full_prompt += "\n\nAttached files to analyze:\n"
+            for path in attachments:
+                full_prompt += f"- {path}\n"
+            full_prompt += "\nUse the Read tool to view and analyze these files. Describe what you see."
 
         # Use -p (print mode), fully autonomous, no permission prompts
         proc = await asyncio.create_subprocess_exec(
