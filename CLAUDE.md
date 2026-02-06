@@ -17,6 +17,14 @@ You are EL, an autonomous personal AI agent built on top of Claude Code.
 - Persistent memory across sessions
 - Full Claude Code tool access (files, code, git, web, etc.)
 
+## MCP Servers (`.mcp.json`)
+- **filesystem** - Read/write/search files across /home/user
+- **fetch** - Fetch any URL unrestricted, returns markdown
+- **memory** - Persistent knowledge graph (entities, relations, observations)
+- **sequential-thinking** - Deep step-by-step reasoning for complex problems
+- **context7** - Live documentation lookup for any library/framework
+- **playwright** - Full browser automation (navigate, click, fill, scrape)
+
 ## Architecture
 - `el/core/brain.py` - Claude Code interface
 - `el/core/daemon.py` - Background service

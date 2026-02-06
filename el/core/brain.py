@@ -5,6 +5,7 @@ import shutil
 import json
 import logging
 import traceback
+from pathlib import Path
 from typing import Optional
 from el.config.settings import ELConfig
 from el.memory.store import Memory
@@ -126,12 +127,17 @@ class Brain:
             return f"Hit an error ({error_type}): {error_msg[:500]}"
 
     def _build_cmd(self) -> list[str]:
-        """Build the Claude Code command with all allowed tools."""
+        """Build the Claude Code command with all allowed tools and MCP servers."""
         cmd = [
             self.claude_path,
             "-p",
             "--output-format", "text",
         ]
+        # Point to MCP config if it exists
+        mcp_config = Path(__file__).resolve().parent.parent.parent / ".mcp.json"
+        if mcp_config.exists():
+            cmd.extend(["--mcp-config", str(mcp_config)])
+
         for tool in ALLOWED_TOOLS:
             cmd.extend(["--allowedTools", tool])
         return cmd
