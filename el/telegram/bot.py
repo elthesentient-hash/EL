@@ -214,17 +214,6 @@ class ELBot:
         # Send text response
         await update.message.reply_text(response[:4096])
 
-        # Also send voice if enabled
-        if self.config.telegram.voice_enabled:
-            try:
-                audio_path = await self.voice.text_to_speech(response)
-                EL_VOICE_CACHE.mkdir(parents=True, exist_ok=True)
-                with open(audio_path, "rb") as audio_file:
-                    await update.message.reply_voice(voice=audio_file)
-                os.unlink(audio_path)
-            except Exception as e:
-                logger.warning(f"Voice response failed (falling back to text only): {e}")
-
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming photos/images."""
         if not self._is_authorized(update.effective_user.id):

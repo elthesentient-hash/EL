@@ -119,8 +119,9 @@ class Brain:
             logger.error(msg)
             return msg
         except Exception as e:
-            logger.error(f"Brain error: {e}")
-            return f"Something went wrong: {str(e)[:300]}"
+            error_msg = str(e) or f"{type(e).__name__} (no details)"
+            logger.error(f"Brain error [{type(e).__name__}]: {error_msg}")
+            return f"Something went wrong: {error_msg[:300]}"
 
     async def _invoke_claude(self, system_prompt: str, message: str, attachments: list[str] = None) -> str:
         """Invoke Claude Code CLI in print mode."""
