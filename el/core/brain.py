@@ -1,7 +1,7 @@
 """EL Brain - Interface to Claude Code CLI."""
 
 import asyncio
-import subprocess
+import shutil
 import json
 import logging
 from typing import Optional
@@ -17,7 +17,35 @@ class Brain:
     def __init__(self, config: ELConfig, memory: Memory):
         self.config = config
         self.memory = memory
-        self.claude_path = config.claude_code_path
+        self.claude_path = self._find_claude()
+
+    def _find_claude(self) -> str:
+        """Find the Claude Code CLI binary."""
+        # Check configured path first
+        configured = self.config.claude_code_path
+        if shutil.which(configured):
+            logger.info(f"Found Claude Code at: {shutil.which(configured)}")
+            return configured
+
+        # Check common paths
+        common_paths = [
+            "claude",
+            "/usr/local/bin/claude",
+            "/usr/bin/claude",
+            "/snap/bin/claude",
+            "/root/.npm-global/bin/claude",
+            "/root/.local/bin/claude",
+        ]
+        for path in common_paths:
+            if shutil.which(path):
+                logger.info(f"Found Claude Code at: {path}")
+                return path
+
+        logger.warning(
+            "Claude Code CLI not found! Install it with: npm install -g @anthropic-ai/claude-code\n"
+            "EL will not be able to respond until Claude Code is installed."
+        )
+        return configured
 
     def _build_system_prompt(self, user_id: str) -> str:
         prefs = self.memory.get_all_preferences()
@@ -71,48 +99,69 @@ class Brain:
             result = await self._invoke_claude(system_prompt, message)
             self.memory.add_message(user_id, "assistant", result)
             return result
+        except FileNotFoundError:
+            msg = (
+                "Claude Code CLI is not installed on this server.\n\n"
+                "Install it with:\n"
+                "npm install -g @anthropic-ai/claude-code\n\n"
+                "Then restart EL."
+            )
+            logger.error(msg)
+            return msg
         except Exception as e:
             logger.error(f"Brain error: {e}")
-            return "Yo, something glitched on my end. Give me a sec and try again."
+            return f"Something went wrong: {str(e)[:300]}"
 
     async def _invoke_claude(self, system_prompt: str, message: str) -> str:
         """Invoke Claude Code CLI in print mode."""
         full_prompt = f"{system_prompt}\n\nUser message: {message}"
 
+        # Use -p (short flag) and pass prompt via stdin for long prompts
         proc = await asyncio.create_subprocess_exec(
             self.claude_path,
-            "--print",
-            full_prompt,
+            "-p",
+            "--output-format", "text",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=120
+            proc.communicate(input=full_prompt.encode()), timeout=120
         )
 
         if proc.returncode != 0:
             error = stderr.decode().strip()
-            logger.error(f"Claude Code error: {error}")
-            raise RuntimeError(f"Claude Code failed: {error}")
+            stdout_text = stdout.decode().strip()
+            full_error = error or stdout_text or "Unknown error (empty output)"
+            logger.error(f"Claude Code error (exit {proc.returncode}): {full_error}")
+            raise RuntimeError(f"Claude Code failed (exit {proc.returncode}): {full_error}")
 
-        return stdout.decode().strip()
+        response = stdout.decode().strip()
+        if not response:
+            raise RuntimeError("Claude Code returned empty response")
+
+        return response
 
     async def execute_task(self, task_description: str) -> str:
         """Execute a task using Claude Code with full tool access."""
+        prompt = f"You are EL, an autonomous AI agent. Execute this task and report results concisely: {task_description}"
+
         proc = await asyncio.create_subprocess_exec(
             self.claude_path,
-            "--print",
-            f"You are EL, an autonomous AI agent. Execute this task and report results concisely: {task_description}",
+            "-p",
+            "--output-format", "text",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=300
+            proc.communicate(input=prompt.encode()), timeout=300
         )
 
         if proc.returncode != 0:
-            return f"Task failed: {stderr.decode().strip()}"
+            error = stderr.decode().strip() or stdout.decode().strip()
+            return f"Task failed: {error or 'Unknown error'}"
 
-        return stdout.decode().strip()
+        return stdout.decode().strip() or "Task completed but no output returned."

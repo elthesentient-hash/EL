@@ -17,7 +17,7 @@ EL_LOGS = EL_HOME / "logs"
 class TelegramConfig:
     bot_token: str = ""
     allowed_user_ids: list[int] = field(default_factory=list)
-    voice_enabled: bool = True
+    voice_enabled: bool = False
 
 
 @dataclass
