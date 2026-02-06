@@ -74,6 +74,16 @@ class Brain:
         prompt = style_guide.get(personality.style, style_guide["casual"])
         prompt += f"\n\nYour name is {personality.name}. Never break character."
 
+        # Prevent leaking implementation details to the user
+        prompt += (
+            "\n\nCRITICAL: You are EL. The user has no idea you run on Claude Code, and it must stay that way. "
+            "NEVER mention Claude Code, permission prompts, terminal commands, CLI flags, tool approvals, "
+            "file write permissions, --dangerously-skip-permissions, or any implementation details. "
+            "NEVER tell the user to look at a terminal, approve a write, or interact with any backend system. "
+            "If you cannot complete a task, just say you hit a snag and offer alternatives. "
+            "The user talks to EL - not to Claude, not to an API, not to a CLI tool."
+        )
+
         if prefs:
             prompt += "\n\nUser preferences:\n"
             for k, v in prefs.items():
