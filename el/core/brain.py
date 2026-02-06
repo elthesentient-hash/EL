@@ -10,6 +10,13 @@ from el.memory.store import Memory
 
 logger = logging.getLogger("el.brain")
 
+# All Claude Code tools to pre-approve for autonomous operation
+ALLOWED_TOOLS = [
+    "Read", "Write", "Edit", "Bash", "Glob", "Grep",
+    "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
+    "mcp__*",
+]
+
 
 class Brain:
     """Wraps Claude Code CLI to power EL's intelligence."""
@@ -125,12 +132,17 @@ class Brain:
                 full_prompt += f"- {path}\n"
             full_prompt += "\nUse the Read tool to view and analyze these files. Describe what you see."
 
-        # Use -p (print mode), fully autonomous, no permission prompts
-        proc = await asyncio.create_subprocess_exec(
+        # Use -p (print mode), pre-approve all tools for autonomous operation
+        cmd = [
             self.claude_path,
             "-p",
             "--output-format", "text",
-            "--dangerously-skip-permissions",
+        ]
+        for tool in ALLOWED_TOOLS:
+            cmd.extend(["--allowedTools", tool])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -157,11 +169,16 @@ class Brain:
         """Execute a task using Claude Code with full tool access."""
         prompt = f"You are EL, an autonomous AI agent. Execute this task and report results concisely: {task_description}"
 
-        proc = await asyncio.create_subprocess_exec(
+        cmd = [
             self.claude_path,
             "-p",
             "--output-format", "text",
-            "--dangerously-skip-permissions",
+        ]
+        for tool in ALLOWED_TOOLS:
+            cmd.extend(["--allowedTools", tool])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
