@@ -1,0 +1,12 @@
+# EL - Core Dependencies
+python-telegram-bot>=21.0
+openai-whisper>=20231117
+numpy>=1.24
+
+# Voice - install one or both
+# pip install bark           # Human-like TTS (needs GPU)
+# pip install piper-tts      # Lighter TTS alternative
+
+# System requirement: ffmpeg (for voice message conversion)
+# Ubuntu/Debian: sudo apt install ffmpeg
+# macOS: brew install ffmpeg
