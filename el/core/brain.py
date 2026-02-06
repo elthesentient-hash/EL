@@ -116,11 +116,12 @@ class Brain:
         """Invoke Claude Code CLI in print mode."""
         full_prompt = f"{system_prompt}\n\nUser message: {message}"
 
-        # Use -p (short flag) and pass prompt via stdin for long prompts
+        # Use -p (print mode), fully autonomous, no permission prompts
         proc = await asyncio.create_subprocess_exec(
             self.claude_path,
             "-p",
             "--output-format", "text",
+            "--dangerously-skip-permissions",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -151,6 +152,7 @@ class Brain:
             self.claude_path,
             "-p",
             "--output-format", "text",
+            "--dangerously-skip-permissions",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
