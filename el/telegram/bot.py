@@ -15,6 +15,7 @@ from telegram.ext import (
 )
 
 from el.core.brain import Brain
+from el.core.media import contains_youtube_url, download_youtube_video, extract_video_frames
 from el.memory.store import Memory
 from el.voice.engine import VoiceEngine, convert_ogg_to_wav
 from el.agents.cowork import CoworkOrchestrator
@@ -208,11 +209,81 @@ class ELBot:
             await update.message.reply_text(f"Team results:\n\n{result[:4000]}")
             return
 
+        # Check for YouTube URL
+        yt_url = contains_youtube_url(message)
+        if yt_url:
+            await self._handle_youtube(update, user_id, yt_url, message)
+            return
+
         # Regular conversation
         response = await self.brain.think(user_id, message)
 
         # Send text response
         await update.message.reply_text(response[:4096])
+
+    async def _handle_youtube(self, update: Update, user_id: str, url: str, original_message: str):
+        """Handle a YouTube URL - download, extract frames, analyze."""
+        await update.message.reply_text(f"Got the YouTube link. Downloading and analyzing...")
+
+        work_dir = tempfile.mkdtemp(prefix="el_yt_", dir="/tmp")
+
+        try:
+            # Download video info, transcript, and video file
+            yt_data = await download_youtube_video(url, work_dir)
+
+            # Build context for Claude
+            context_parts = []
+            if yt_data["title"]:
+                context_parts.append(f"Video title: {yt_data['title']}")
+            if yt_data["description"]:
+                context_parts.append(f"Description: {yt_data['description']}")
+            if yt_data["duration"]:
+                mins = yt_data["duration"] // 60
+                secs = yt_data["duration"] % 60
+                context_parts.append(f"Duration: {mins}m {secs}s")
+
+            attachments = []
+
+            # Extract frames if video was downloaded
+            if yt_data["video_path"]:
+                frame_dir = os.path.join(work_dir, "frames")
+                os.makedirs(frame_dir, exist_ok=True)
+                frames = await extract_video_frames(yt_data["video_path"], frame_dir)
+                attachments.extend(frames)
+                context_parts.append(f"({len(frames)} frames extracted from the video)")
+
+            if yt_data["transcript"]:
+                # Save transcript to a file so Claude can read it
+                transcript_path = os.path.join(work_dir, "transcript.txt")
+                with open(transcript_path, "w") as f:
+                    f.write(yt_data["transcript"])
+                attachments.append(transcript_path)
+                context_parts.append("Transcript file attached.")
+
+            # Remove the URL from the message to get the user's actual request
+            user_request = original_message.replace(url, "").strip()
+            if not user_request:
+                user_request = "Analyze this YouTube video. Summarize what it's about, key points, and anything interesting."
+
+            prompt = f"{user_request}\n\nYouTube video info:\n" + "\n".join(context_parts)
+
+            if not attachments and not yt_data["transcript"]:
+                # Nothing could be downloaded - let Claude try via web
+                prompt = f"{user_request}\n\nYouTube URL: {url}\n\nI couldn't download this video directly. Use WebFetch or WebSearch to find information about this video and analyze it."
+
+            response = await self.brain.think(user_id, prompt, attachments=attachments if attachments else None)
+            await update.message.reply_text(response[:4096])
+
+        except Exception as e:
+            logger.error(f"YouTube handling error: {e}")
+            # Fallback: just let Claude handle the URL via web tools
+            fallback_prompt = f"{original_message}\n\nNote: Direct video download failed. Use WebFetch or WebSearch to find info about this YouTube video and answer the user's request."
+            response = await self.brain.think(user_id, fallback_prompt)
+            await update.message.reply_text(response[:4096])
+        finally:
+            # Cleanup work directory
+            import shutil
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming photos/images."""

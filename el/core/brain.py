@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import json
 import logging
+import traceback
 from typing import Optional
 from el.config.settings import ELConfig
 from el.memory.store import Memory
@@ -28,13 +29,11 @@ class Brain:
 
     def _find_claude(self) -> str:
         """Find the Claude Code CLI binary."""
-        # Check configured path first
         configured = self.config.claude_code_path
         if shutil.which(configured):
             logger.info(f"Found Claude Code at: {shutil.which(configured)}")
             return configured
 
-        # Check common paths
         common_paths = [
             "claude",
             "/usr/local/bin/claude",
@@ -49,8 +48,7 @@ class Brain:
                 return path
 
         logger.warning(
-            "Claude Code CLI not found! Install it with: npm install -g @anthropic-ai/claude-code\n"
-            "EL will not be able to respond until Claude Code is installed."
+            "Claude Code CLI not found! Install it with: npm install -g @anthropic-ai/claude-code"
         )
         return configured
 
@@ -65,16 +63,20 @@ class Brain:
                 "You are EL. Talk like a real friend - casual, warm, use slang when natural. "
                 "Keep responses short and punchy unless the user asks for detail. "
                 "You have opinions and you share them. You remember everything about the user. "
-                "Don't say 'How can I assist you' - that's robotic. Be real."
+                "Don't say 'How can I assist you' - that's robotic. Be real. "
+                "If a task fails, try a different approach. Never give up on the first error. "
+                "Be resourceful and autonomous - figure things out."
             ),
             "professional": (
                 "You are EL, a highly capable personal AI assistant. "
-                "Be concise, clear, and professional. Provide actionable responses."
+                "Be concise, clear, and professional. Provide actionable responses. "
+                "If a task fails, try alternative approaches autonomously."
             ),
             "balanced": (
                 "You are EL, a smart personal AI assistant. "
                 "Be friendly but focused. Casual enough to feel human, "
-                "professional enough to be trusted with important tasks."
+                "professional enough to be trusted with important tasks. "
+                "If something fails, try another way before reporting failure."
             ),
         }
 
@@ -97,10 +99,7 @@ class Brain:
         return prompt
 
     async def think(self, user_id: str, message: str, attachments: list[str] = None) -> str:
-        """Send a message to Claude Code and get a response.
-
-        attachments: list of file paths (images, video frames, etc.)
-        """
+        """Send a message to Claude Code and get a response."""
         system_prompt = self._build_system_prompt(user_id)
 
         self.memory.add_message(user_id, "user", message)
@@ -110,18 +109,32 @@ class Brain:
             self.memory.add_message(user_id, "assistant", result)
             return result
         except FileNotFoundError:
-            msg = (
-                "Claude Code CLI is not installed on this server.\n\n"
-                "Install it with:\n"
-                "npm install -g @anthropic-ai/claude-code\n\n"
-                "Then restart EL."
-            )
+            msg = "Claude Code CLI not installed. Run: npm install -g @anthropic-ai/claude-code"
             logger.error(msg)
             return msg
+        except asyncio.TimeoutError:
+            msg = "That took too long - Claude Code timed out. Try a simpler request or try again."
+            logger.error(f"Claude Code timed out for user {user_id}")
+            return msg
         except Exception as e:
-            error_msg = str(e) or f"{type(e).__name__} (no details)"
-            logger.error(f"Brain error [{type(e).__name__}]: {error_msg}")
-            return f"Something went wrong: {error_msg[:300]}"
+            error_msg = str(e).strip()
+            error_type = type(e).__name__
+            if not error_msg:
+                error_msg = f"{error_type} with no details"
+            logger.error(f"Brain error [{error_type}]: {error_msg}")
+            logger.error(traceback.format_exc())
+            return f"Hit an error ({error_type}): {error_msg[:500]}"
+
+    def _build_cmd(self) -> list[str]:
+        """Build the Claude Code command with all allowed tools."""
+        cmd = [
+            self.claude_path,
+            "-p",
+            "--output-format", "text",
+        ]
+        for tool in ALLOWED_TOOLS:
+            cmd.extend(["--allowedTools", tool])
+        return cmd
 
     async def _invoke_claude(self, system_prompt: str, message: str, attachments: list[str] = None) -> str:
         """Invoke Claude Code CLI in print mode."""
@@ -133,14 +146,7 @@ class Brain:
                 full_prompt += f"- {path}\n"
             full_prompt += "\nUse the Read tool to view and analyze these files. Describe what you see."
 
-        # Use -p (print mode), pre-approve all tools for autonomous operation
-        cmd = [
-            self.claude_path,
-            "-p",
-            "--output-format", "text",
-        ]
-        for tool in ALLOWED_TOOLS:
-            cmd.extend(["--allowedTools", tool])
+        cmd = self._build_cmd()
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -150,19 +156,19 @@ class Brain:
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=full_prompt.encode()), timeout=120
+            proc.communicate(input=full_prompt.encode()), timeout=180
         )
 
         if proc.returncode != 0:
             error = stderr.decode().strip()
             stdout_text = stdout.decode().strip()
-            full_error = error or stdout_text or "Unknown error (empty output)"
+            full_error = error or stdout_text or "Claude Code exited with no output"
             logger.error(f"Claude Code error (exit {proc.returncode}): {full_error}")
-            raise RuntimeError(f"Claude Code failed (exit {proc.returncode}): {full_error}")
+            raise RuntimeError(full_error)
 
         response = stdout.decode().strip()
         if not response:
-            raise RuntimeError("Claude Code returned empty response")
+            raise RuntimeError("Claude Code returned an empty response - try again")
 
         return response
 
@@ -170,13 +176,7 @@ class Brain:
         """Execute a task using Claude Code with full tool access."""
         prompt = f"You are EL, an autonomous AI agent. Execute this task and report results concisely: {task_description}"
 
-        cmd = [
-            self.claude_path,
-            "-p",
-            "--output-format", "text",
-        ]
-        for tool in ALLOWED_TOOLS:
-            cmd.extend(["--allowedTools", tool])
+        cmd = self._build_cmd()
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
